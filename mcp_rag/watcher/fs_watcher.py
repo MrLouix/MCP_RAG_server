@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -24,61 +25,71 @@ class _RagFileEventHandler(FileSystemEventHandler):
     def __init__(
         self,
         queue: asyncio.Queue,
+        event_loop: asyncio.AbstractEventLoop,
         debounce_ms: int,
         supported_extensions: set[str],
     ) -> None:
         self.queue = queue
+        self.loop = event_loop
         self.debounce_s = debounce_ms / 1000.0
         self.supported_extensions = supported_extensions
         self._last_event: dict[str, float] = {}  # path -> timestamp
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
     def _is_supported(self, path: str) -> bool:
         return Path(path).suffix.lower() in self.supported_extensions
 
     def _should_emit(self, path: str) -> bool:
         now = time.time()
-        last = self._last_event.get(path, 0)
-        if now - last > self.debounce_s:
+        with self._lock:
+            last = self._last_event.get(path, 0)
+            if now - last > self.debounce_s:
+                self._last_event[path] = now
+                return True
             self._last_event[path] = now
-            return True
-        self._last_event[path] = now
-        return False
+            return False
+
+    def _put_event(self, event: dict[str, Any]) -> None:
+        """Schedule event into the async queue from a watchdog thread."""
+        try:
+            asyncio.run_coroutine_threadsafe(self.queue.put(event), loop=self.loop)
+        except Exception as exc:
+            logger.warning("queue_put_failed", extra={"error": str(exc), "event": event})
 
     def on_created(self, event: FileSystemEvent) -> None:
         if not event.is_directory and self._is_supported(event.src_path):
             if self._should_emit(event.src_path):
-                asyncio.run_coroutine_threadsafe(
-                    self.queue.put({"type": "created", "path": event.src_path, "time": time.time()}),
-                    loop=asyncio.get_event_loop(),
-                )
+                self._put_event({
+                    "type": "created",
+                    "path": event.src_path,
+                    "time": time.time(),
+                })
 
     def on_modified(self, event: FileSystemEvent) -> None:
         if not event.is_directory and self._is_supported(event.src_path):
             if self._should_emit(event.src_path):
-                asyncio.run_coroutine_threadsafe(
-                    self.queue.put({"type": "modified", "path": event.src_path, "time": time.time()}),
-                    loop=asyncio.get_event_loop(),
-                )
+                self._put_event({
+                    "type": "modified",
+                    "path": event.src_path,
+                    "time": time.time(),
+                })
 
     def on_deleted(self, event: FileSystemEvent) -> None:
         if not event.is_directory and self._is_supported(event.src_path):
-            asyncio.run_coroutine_threadsafe(
-                self.queue.put({"type": "deleted", "path": event.src_path, "time": time.time()}),
-                loop=asyncio.get_event_loop(),
-            )
+            self._put_event({
+                "type": "deleted",
+                "path": event.src_path,
+                "time": time.time(),
+            })
 
     def on_moved(self, event: FileSystemEvent) -> None:
         if not event.is_directory and self._is_supported(event.dest_path):
-            asyncio.run_coroutine_threadsafe(
-                self.queue.put({
-                    "type": "moved",
-                    "src": event.src_path,
-                    "dest": event.dest_path,
-                    "time": time.time(),
-                }),
-                loop=asyncio.get_event_loop(),
-            )
+            self._put_event({
+                "type": "moved",
+                "src": event.src_path,
+                "dest": event.dest_path,
+                "time": time.time(),
+            })
 
 
 class WatchManager:
@@ -115,9 +126,12 @@ class WatchManager:
 
         if self._queue is None:
             raise RuntimeError("WatchManager not started")
+        if self._event_loop is None:
+            raise RuntimeError("WatchManager event loop not set")
 
         handler = _RagFileEventHandler(
             queue=self._queue,
+            event_loop=self._event_loop,
             debounce_ms=self.cfg.debounce_ms,
             supported_extensions={e.lower() for e in self.rag_cfg.supported_extensions},
         )
