@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Sequence
 
 import numpy as np
@@ -29,50 +30,56 @@ class Embedder:
         self._mm = model_manager
         self._tokenizer: Tokenizer | None = None
         self._session: InferenceSession | None = None
-        self._model_name: str | None = None
-
     async def _ensure_loaded(self) -> None:
-        """Lazy-load tokenizer + ONNX model from HuggingFace Hub."""
+        """Load tokenizer + ONNX model from local volume (/app/models)."""
         if self._session is not None:
             return
 
-        cache_dir = os.environ.get("HF_HOME", "/app/models/huggingface")
+        import os
+        import shutil
+        from huggingface_hub import hf_hub_download
+
         model_name = self._mm.rag_cfg.embedding.model or DEFAULT_MODEL
+        # Safe dir name from model name
+        safe_name = model_name.replace("/", "_")
+        model_dir = Path("/app/models") / safe_name
+        model_dir.mkdir(parents=True, exist_ok=True)
 
-        # Download tokenizer.json
-        tok_path = hf_hub_download(
-            repo_id=model_name,
-            filename="tokenizer.json",
-            cache_dir=cache_dir,
-        )
-        self._tokenizer = Tokenizer.from_file(tok_path)
+        # Helper: download if not exists locally
+        def _download(filename: str, dest: Path) -> None:
+            if dest.exists():
+                return
+            local = Path(hf_hub_download(repo_id=model_name, filename=filename))
+            shutil.copy2(local, dest)
 
-        # Download ONNX model — try multiple filenames (model repos vary)
-        onnx_path = None
-        for filename in ("onnx/model.onnx", "onnx/model_quantized.onnx", "model.onnx"):
-            try:
-                onnx_path = hf_hub_download(
-                    repo_id=model_name,
-                    filename=filename,
-                    cache_dir=cache_dir,
-                )
-                break
-            except Exception:
-                continue
+        tok_path = model_dir / "tokenizer.json"
+        onnx_path = model_dir / "model.onnx"
 
-        if onnx_path is None:
+        # Download on first run only (requires network once)
+        _download("tokenizer.json", tok_path)
+        if not onnx_path.exists():
+            for fname in ("onnx/model.onnx", "onnx/model_quantized.onnx", "model.onnx"):
+                try:
+                    remote = hf_hub_download(repo_id=model_name, filename=fname)
+                    shutil.copy2(remote, onnx_path)
+                    break
+                except Exception:
+                    continue
+
+        if not onnx_path.exists():
             raise RuntimeError(
                 f"No ONNX model found in {model_name}. "
-                "Use a repo with pre-converted ONNX (e.g. Xenova/*)."
+                "Run once with network access, then the model is cached locally."
             )
 
+        self._tokenizer = Tokenizer.from_file(str(tok_path))
         self._session = InferenceSession(
-            onnx_path,
+            str(onnx_path),
             providers=["CPUExecutionProvider"],
         )
+        assert self._session is not None
 
         # Detect ONNX input names from graph
-        assert self._session is not None
         input_names = [inp.name for inp in self._session.get_inputs()]
         self._input_ids_name = next((n for n in input_names if "input_ids" in n), input_names[0])
         self._attn_mask_name = next((n for n in input_names if "attention" in n or "mask" in n), None)

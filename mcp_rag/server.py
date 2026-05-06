@@ -358,22 +358,36 @@ async def tag_document(
     workspace: str = "default",
 ) -> dict[str, Any]:
     """Retag a single document without full re-ingestion."""
-    # TODO: partial implementation — requires reading source_path from metadata
-    # and re-running tagging engine.
     if _g_storage is None:
         return {"error": "Server not initialized"}
     chunks = _g_storage.get_document_chunks(doc_id, workspace)
     if not chunks:
         return {"error": "Document not found", "doc_id": doc_id}
-    # Return existing tags as-is for now
+
+    import json
+    from pathlib import Path
+    from mcp_rag.tagging.heuristics import HeuristicTagger
+
+    # Get source path from metadata
     meta = chunks[0].get("metadata", {})
-    return {
-        "status": "success",
-        "doc_id": doc_id,
-        "tags": json.loads(meta.get("tags", "{}")),
-        "duration_ms": 0,
-        "cache_hit": not force_retag,
-    }
+    source_path = meta.get("source_path", "")
+    old_tags = json.loads(meta.get("tags", "{}"))
+
+    if not force_retag:
+        return {"status": "success", "doc_id": doc_id, "tags": old_tags, "duration_ms": 0, "cache_hit": True}
+
+    # Recalculate H1 tags
+    h1 = HeuristicTagger().tag_document(Path(source_path))
+    new_tags = {"system": h1, "semantic": old_tags.get("semantic", []), "model": old_tags.get("model", ""), "inferred_at": old_tags.get("inferred_at", ""), "llm_status": "disabled"}
+
+    # Update all chunks in ChromaDB
+    coll = _g_storage.get_collection(workspace)
+    ids_to_update = [c.get("chunk_id") for c in chunks if c.get("chunk_id")]
+    new_metas = [dict(c.get("metadata", {}), tags=json.dumps(new_tags)) for c in chunks if c.get("chunk_id")]
+    if ids_to_update and new_metas:
+        coll.update(ids=ids_to_update, metadatas=list(new_metas))
+
+    return {"status": "success", "doc_id": doc_id, "tags": new_tags, "duration_ms": 0, "cache_hit": False, "new_system_tags": h1}
 
 
 # ------------------------------------------------------------------
