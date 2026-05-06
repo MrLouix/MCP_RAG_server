@@ -56,6 +56,7 @@ def _init_globals(config_path: str | None = None) -> None:
     _g_storage = Storage(_g_config.rag.index_path)
     _g_pipeline = IngestPipeline(_g_config, _g_model_manager, _g_storage)
     _g_watcher = WatchManager(_g_config)
+    _g_watcher.inject_dependencies(_g_pipeline, _g_storage, _g_model_manager)
     logger.info("server_initialized", extra={"config": config_path or "default"})
 
 
@@ -304,6 +305,12 @@ async def watch_directory(
     if _g_watcher is None:
         return {"error": "Server not initialized"}
     if enabled:
+        # Lazy-start the watcher if not already started (e.g. when config has watcher.enabled=false)
+        if _g_watcher._queue is None:
+            import asyncio
+            loop = asyncio.get_running_loop()
+            _g_watcher.start(loop)
+            logger.info("watcher_started_lazy")
         wid = _g_watcher.add_watch(str(Path(dir_path).resolve()), recursive)
         return {
             "status": "watching",

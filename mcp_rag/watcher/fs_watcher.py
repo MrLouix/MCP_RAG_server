@@ -101,10 +101,119 @@ class WatchManager:
         self._observers: dict[str, Observer] = {}
         self._queue: asyncio.Queue | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
+        # Dependencies injected by server
+        self._pipeline: Any | None = None
+        self._storage: Any | None = None
+        self._model_manager: Any | None = None
+
+    def inject_dependencies(
+        self,
+        pipeline: Any,
+        storage: Any,
+        model_manager: Any,
+    ) -> None:
+        """Inject server globals so the consumer can access them."""
+        self._pipeline = pipeline
+        self._storage = storage
+        self._model_manager = model_manager
 
     def start(self, event_loop: asyncio.AbstractEventLoop) -> None:
         self._event_loop = event_loop
         self._queue = asyncio.Queue()
+        # Schedule the consumer coroutine on the provided event loop
+        self._event_loop.create_task(self._consumer())
+
+    async def _consumer(self) -> None:
+        """Background coroutine that consumes filesystem events and ingests files."""
+        logger.info("watcher_consumer_started")
+        while True:
+            event = await self._queue.get()
+            try:
+                event_type = event.get("type")
+                path = event.get("path")
+                logger.info("watcher_event_queued", extra={
+                    "type": event_type,
+                    "path": path,
+                    "time": event.get("time"),
+                })
+                await self._handle_event(event)
+            except Exception as exc:
+                logger.warning("watcher_event_handler_failed", extra={
+                    "error": str(exc),
+                    "event": event,
+                })
+            finally:
+                self._queue.task_done()
+
+    async def _handle_event(self, event: dict[str, Any]) -> None:
+        """Process a single filesystem event by delegating to the ingestion pipeline."""
+        event_type = event.get("type")
+        path_str = event.get("path", "")
+
+        if event_type in ("created", "modified"):
+            if self._pipeline is None:
+                logger.warning("watcher_pipeline_not_available")
+                return
+
+            p = Path(path_str)
+            if not p.exists():
+                logger.info("watcher_file_gone", extra={"path": path_str})
+                return
+            if p.suffix.lower() not in {e.lower() for e in self.rag_cfg.supported_extensions}:
+                return
+
+            try:
+                logger.info("watcher_ingesting_file", extra={"path": path_str})
+
+                # Load OCR optionally
+                ocr_reader = None
+                if self.rag_cfg.ocr_enabled and self._model_manager is not None:
+                    try:
+                        ocr_reader = await self._model_manager.get_ocr()
+                    except Exception:
+                        logger.warning("watcher_ocr_load_failed")
+
+                tagging_stats: dict[str, Any] = {
+                    "cache_hits": 0, "llm_inferences": 0,
+                    "llm_failures": 0, "avg_inference_ms": 0.0,
+                }
+                result = await self._pipeline._ingest_single(p, ocr_reader, "default", tagging_stats)
+                logger.info("watcher_file_ingested", extra={
+                    "path": path_str,
+                    "status": result.get("status"),
+                    "doc_id": result.get("doc_id"),
+                    "chunks": result.get("chunks"),
+                })
+            except Exception as exc:
+                logger.warning("watcher_ingest_failed", extra={
+                    "path": path_str,
+                    "error": str(exc),
+                })
+
+        elif event_type == "deleted":
+            if self._storage is not None and self.cfg.sync_deletions:
+                existing = self._storage.resolve_path(path_str)
+                if existing:
+                    doc_id = existing["doc_id"]
+                    self._storage.delete_doc_chunks(doc_id, "default")
+                    self._storage.delete_from_path_index(path_str)
+                    logger.info("watcher_file_deleted_from_index", extra={
+                        "path": path_str,
+                        "doc_id": doc_id,
+                    })
+
+        elif event_type == "moved":
+            src = event.get("src", "")
+            dest = event.get("dest", "")
+            # Remove old entry
+            if self._storage is not None:
+                existing = self._storage.resolve_path(src)
+                if existing:
+                    self._storage.delete_doc_chunks(existing["doc_id"], "default")
+                    self._storage.delete_from_path_index(src)
+            # Ingest the new location
+            if Path(dest).suffix.lower() in {e.lower() for e in self.rag_cfg.supported_extensions}:
+                await self._handle_event({"type": "created", "path": dest, "time": event.get("time")})
 
     @property
     def queue(self) -> asyncio.Queue | None:
