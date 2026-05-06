@@ -411,11 +411,12 @@ async def diagnose(
     warnings = []
 
     # ChromaDB
-    chroma_ok = _g_storage is not None
     collections = []
-    if chroma_ok:
+    chroma_ok = False
+    if _g_storage is not None:
         try:
             collections = _g_storage.list_collections()
+            chroma_ok = True
         except Exception:
             chroma_ok = False
 
@@ -527,8 +528,8 @@ def main() -> None:
     logger.info("server_starting", extra={"transport": args.transport})
     if args.transport == "sse":
         import uvicorn
-        app = _mcp.sse_app()
-        logger.info("sse_server_starting", extra={"port": args.port, "host": args.host})
+        app = _mcp.streamable_http_app()
+        logger.info("streamable_http_server_starting", extra={"port": args.port, "host": args.host})
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     else:
         _mcp.run(transport="stdio")

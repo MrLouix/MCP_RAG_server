@@ -37,19 +37,22 @@ ENV/
 *~
 
 # RAG index (generated at runtime)
-rag_index/
+rag_index/*
 docs/
-config/
+config/*
 test*.db
 .rag_tag_cache.db
 .ragrules.yaml
+
+# Session data
+documents/*
 
 # Logs
 logs/*.log
 logs/*.json
 
 # Models
-models/
+models/*
 *.gguf
 
 # Test cache

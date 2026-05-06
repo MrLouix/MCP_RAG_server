@@ -14,11 +14,11 @@ fi
 # ─── Ensure working directories exist & are writable ─────────
 # These may have been auto-created by Docker with root ownership.
 # We fix permissions so the host user can read/write them.
-for d in /app/documents /app/models /app/rag_index; do
-    if [ -d "$d" ] || mkdir -p "$d"; then
-        chmod 777 "$d"
-    fi
-done
+#for d in /app/documents /app/models /app/rag_index; do
+#    if [ -d "$d" ] || mkdir -p "$d"; then
+#        chmod 777 "$d"
+#    fi
+#done
 
 # Defaults
 TRANSPORT="${RAG_TRANSPORT:-${TRANSPORT:-stdio}}"
