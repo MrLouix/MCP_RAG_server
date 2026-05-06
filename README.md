@@ -211,7 +211,11 @@ tagging_temperature: 0.1
 pytest tests/ -v
 ```
 
-17 tests unitaires passent (hashing, chunker, model_manager, tagging heuristics, config).
+**17/17 tests unitaires passent** : hashing, chunker, model_manager (mocké), tagging heuristics, config loading.
+
+### Validation E2E (manuelle)
+
+Ingestion d'un fichier Markdown test → recherche sémantique "résiliation contrat" → 2 chunks pertinents retournés avec distance cosinus. Voir `docs/spec.md` §19 pour la procédure complète.
 
 ## Notes techniques
 
@@ -230,8 +234,11 @@ Le chiffrement n'est **pas implémenté** dans cette version (abandonné sur dem
 ### Build
 
 ```bash
-docker build -t mcp-rag-server:latest .
+sg docker -c "docker build -t mcp-rag-server:latest ."
 ```
+
+> **Image produite** : ~5.92 GB (multi-stage builder→production). Compilation torch + llama-cpp-python ≈ 5 min.
+> **Dernier build validé** : 2026-05-06
 
 ### Run — Mode stdio (Hermès lance le conteneur)
 
