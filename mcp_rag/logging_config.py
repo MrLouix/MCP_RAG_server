@@ -2,6 +2,7 @@
 
 import json
 import logging
+import logging.config
 import sys
 from pathlib import Path
 
@@ -22,31 +23,56 @@ class _JsonFormatter(logging.Formatter):
 
 
 def setup_logging(level: str = "INFO", fmt: str = "json", file_path: str | None = None) -> None:
-    """Configure root logger for the application."""
-    root = logging.getLogger()
-    root.setLevel(getattr(logging, level.upper(), logging.INFO))
-    # Clean up uvicorn loggers to prevent duplicated / conflicting handlers
-    for uv_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
-        uv_logger = logging.getLogger(uv_name)
-        uv_logger.handlers.clear()
-        uv_logger.propagate = True  # let uvicorn logs flow through root handler
-    root.handlers.clear()
+    """Configure all loggers cleanly using dictConfig.
 
-    if fmt == "json":
-        formatter: logging.Formatter = _JsonFormatter()
-    else:
-        formatter = logging.Formatter(
-            "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
-        )
+    ``disable_existing_loggers=True`` wipes any handlers added by imported
+    libraries before this function is called (pydantic, watchdog, etc.).
+    """
+    handlers_cfg: dict[str, dict] = {
+        "console": {
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stderr",
+            "level": "DEBUG",
+            "formatter": fmt,
+        },
+    }
+    handler_names = ["console"]
 
-    # Console handler
-    console = logging.StreamHandler(sys.stderr)
-    console.setFormatter(formatter)
-    root.addHandler(console)
-
-    # File handler (simple append; rotation handled externally or added later)
     if file_path:
         Path(file_path).parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(file_path, encoding="utf-8")
-        fh.setFormatter(formatter)
-        root.addHandler(fh)
+        handlers_cfg["file"] = {
+            "class": "logging.FileHandler",
+            "filename": str(Path(file_path)),
+            "encoding": "utf-8",
+            "level": "DEBUG",
+            "formatter": fmt,
+        }
+        handler_names.append("file")
+
+    fmt_name = fmt if fmt in ("json", "text") else "json"
+
+    cfg = {
+        "version": 1,
+        "disable_existing_loggers": True,
+        "formatters": {
+            "json": {"()": _JsonFormatter},
+            "text": {
+                "format": "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+            },
+        },
+        "handlers": handlers_cfg,
+        "root": {
+            "level": getattr(logging, level.upper(), logging.INFO),
+            "handlers": handler_names,
+        },
+        "loggers": {
+            "uvicorn": {"level": "WARNING", "handlers": [], "propagate": False},
+            "uvicorn.access": {"level": "WARNING", "handlers": [], "propagate": False},
+            "uvicorn.error": {"level": "WARNING", "handlers": [], "propagate": False},
+        },
+    }
+    logging.config.dictConfig(cfg)
+
+    # Verify we really have exactly one handler per configured stream
+    root = logging.getLogger()
+    assert len(root.handlers) == len(handler_names), root.handlers
