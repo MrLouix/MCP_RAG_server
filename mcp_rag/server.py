@@ -4,11 +4,12 @@
 """
 
 from __future__ import annotations
-
 import argparse
 import asyncio
+from collections import Counter
+import json
 import logging
-import sys
+import os
 from pathlib import Path
 from typing import Any
 
@@ -115,7 +116,7 @@ async def search_docs(
     if tags:
         for hit in raw_results:
             meta = hit.get("metadata", {})
-            merged = meta.get("tags", {}).get("system", []) + meta.get("tags", {}).get("semantic", [])
+            merged = json.loads(meta.get("tags", "{}")).get("system", []) + json.loads(meta.get("tags", "{}")).get("semantic", [])
             if tags_mode == "all":
                 ok = all(t in merged for t in tags)
             elif tags_mode == "any":
@@ -183,7 +184,7 @@ async def list_documents(
                 "type": m.get("file_type", ""),
                 "chunks_count": m.get("total_chunks", 0),
                 "ingested_at": m.get("ingested_at", ""),
-                "tags": m.get("tags", {}),
+                "tags": json.loads(m.get("tags", "{}")),
                 "orphaned": m.get("orphaned", False),
             })
 
@@ -191,7 +192,7 @@ async def list_documents(
     if tags:
         filtered = []
         for doc in documents:
-            merged = doc.get("tags", {}).get("system", []) + doc.get("tags", {}).get("semantic", [])
+            merged = json.loads(doc.get("tags", "{}")).get("system", []) + json.loads(doc.get("tags", "{}")).get("semantic", [])
             if tags_mode == "all":
                 ok = all(t in merged for t in tags)
             elif tags_mode == "any":
@@ -335,7 +336,7 @@ async def get_tags(
     tag_counts: dict[str, dict[str, Any]] = {}
     for doc in docs.get("documents", []):
         for origin in ("system", "semantic"):
-            for tag in doc.get("tags", {}).get(origin, []):
+            for tag in json.loads(doc.get("tags", "{}")).get(origin, []):
                 if tag not in tag_counts:
                     tag_counts[tag] = {"tag": tag, "count": 0, "origin": origin}
                 tag_counts[tag]["count"] += 1
@@ -369,7 +370,7 @@ async def tag_document(
     return {
         "status": "success",
         "doc_id": doc_id,
-        "tags": meta.get("tags", {}),
+        "tags": json.loads(meta.get("tags", "{}")),
         "duration_ms": 0,
         "cache_hit": not force_retag,
     }

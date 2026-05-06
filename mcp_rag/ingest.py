@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import datetime
+import json
+import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Sequence
@@ -163,7 +165,7 @@ class IngestPipeline:
                     "schema_version": "1.0",
                     "embedding_model": model_name,
                     "orphaned": False,
-                    "tags": tags_result,
+                    "tags": json.dumps(tags_result, ensure_ascii=False),
                 }
                 metadatas.append(meta)
 
