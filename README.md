@@ -225,6 +225,53 @@ pytest tests/ -v
 
 Le chiffrement n'est **pas implémenté** dans cette version (abandonné sur demande). Pour ajouter un chiffrement au repos, placez le dossier `index_path` sur un volume LUKS ou chiffrez individuellement les chunks via l'extension `encrypting-segment-transform` de ChromaDB.
 
+## Docker
+
+### Build
+
+```bash
+docker build -t mcp-rag-server:latest .
+```
+
+### Run — Mode stdio (Hermès lance le conteneur)
+
+```bash
+docker run --rm \
+  -e RAG_TRANSPORT=stdio \
+  -v ./config.yaml:/app/config.yaml:ro \
+  -v ./rag_index:/app/rag_index \
+  mcp-rag-server:latest
+```
+
+### Run — Mode SSE (conteneur daemon, Hermès pointe sur HTTP)
+
+```bash
+docker run -d --name mcp-rag-server \
+  -p 3000:3000 \
+  -e RAG_TRANSPORT=sse \
+  -e PORT=3000 \
+  -e HOST=0.0.0.0 \
+  -v ./config.yaml:/app/config.yaml:ro \
+  -v ./rag_index:/app/rag_index \
+  -v ./models:/app/models:ro \
+  -v ~/documents:/app/documents:ro \
+  mcp-rag-server:latest
+```
+
+### Docker Compose
+
+```bash
+# SSE mode
+docker compose up -d
+
+# Stopping
+docker compose down
+```
+
+### Sécurité SSE
+
+Le serveur FastMCP SSE expose `POST /messages` et `GET /sse`. Il est recommandé de placer un reverse-proxy (Caddy ou Nginx) devant, avec une restriction IP ou un token secret.
+
 ## Licence
 
 MIT — Projet privé MrLouix.
