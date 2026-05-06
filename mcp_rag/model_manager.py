@@ -21,7 +21,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import psutil
-import torch
 from sentence_transformers import SentenceTransformer
 
 from mcp_rag.config import Config
@@ -197,14 +196,16 @@ class ModelManager:
 
         # Try to release PyTorch/CUDA caches if applicable
         try:
-            if slot.name in ("embedder", "llm"):
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                else:
-                    # malloc_trim on Linux to return pages to OS
-                    import ctypes
-                    ctypes.CDLL("libc.so.6").malloc_trim(0)
+            import gc as _gc
+            _gc.collect()
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        try:
+            import ctypes
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
         except Exception:
             pass
 
