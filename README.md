@@ -234,7 +234,7 @@ Le chiffrement n'est **pas implémenté** dans cette version (abandonné sur dem
 ### Build
 
 ```bash
-sg docker -c "docker build -t mcp-rag-server:latest ."
+docker build -t mcp-rag-server:latest .
 ```
 
 > **Image produite** : ~5.92 GB (multi-stage builder→production). Compilation torch + llama-cpp-python ≈ 5 min.
