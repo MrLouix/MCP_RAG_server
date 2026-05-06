@@ -100,16 +100,36 @@ async def search_docs(
     query_vec = await embedder.embed([query], batch_size=1)
     model_name = await embedder.get_model_name()
 
-    results = _g_storage.search(
+    # First: broad semantic search (no tag filter in ChromaDB to avoid complexity)
+    raw_results = _g_storage.search(
         query_embedding=query_vec[0],
-        top_k=top_k,
-        tags=tags,
-        tags_mode=tags_mode,
+        top_k=top_k * 3,  # oversample for application-level filtering
+        tags=None,
         filters=filters,
         workspace=workspace,
         embedding_model=model_name,
     )
-    return {"results": results, "query": query, "workspace": workspace}
+
+    # Second: filter by tags at application level
+    filtered = []
+    if tags:
+        for hit in raw_results:
+            meta = hit.get("metadata", {})
+            merged = meta.get("tags", {}).get("system", []) + meta.get("tags", {}).get("semantic", [])
+            if tags_mode == "all":
+                ok = all(t in merged for t in tags)
+            elif tags_mode == "any":
+                ok = any(t in merged for t in tags)
+            elif tags_mode == "exclude":
+                ok = not any(t in merged for t in tags)
+            else:
+                ok = True
+            if ok:
+                filtered.append(hit)
+    else:
+        filtered = raw_results
+
+    return {"results": filtered[:top_k], "query": query, "workspace": workspace}
 
 
 # ------------------------------------------------------------------
