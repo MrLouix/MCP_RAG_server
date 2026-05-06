@@ -57,3 +57,9 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+test_rag_index/
+test_rag_index2/
+*.db
+.rag_tag_cache.db
+.coverage
+logs/

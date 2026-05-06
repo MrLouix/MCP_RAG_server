@@ -1,0 +1,51 @@
+services:
+  rag-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: mcp-rag-server:latest
+    container_name: mcp-rag-server
+    restart: unless-stopped
+
+    # ---- Transport mode ----
+    # Option A: stdio (Hermes launches container)
+    #   Remove ports, use entrypoint override
+    # Option B: SSE (standalone, Hermes points to http://host:3000/sse)
+    ports:
+      - "3000:3000"
+
+    environment:
+      # stdio  → Hermes Agent launches container as subprocess
+      # sse    → Container exposes HTTP SSE endpoint
+      RAG_TRANSPORT: sse
+      RAG_CONFIG: /app/config.yaml
+      RAG_LOG_LEVEL: INFO
+      PORT: 3000
+      HOST: 0.0.0.0
+
+    volumes:
+      # ChromaDB index + SQLite path_index
+      - ./rag_index:/app/rag_index
+      # Company documents (ingest / watch)
+      - ~/documents:/app/documents:ro
+      # LLM models (GGUF)
+      - ./models:/app/models:ro
+      # Config file
+      - ./config.yaml:/app/config.yaml:ro
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 512M
+
+    # Healthcheck : teste le port SSE ou le processus stdio
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.socket(); s.connect(('127.0.0.1',3000)); s.close()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

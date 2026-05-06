@@ -499,6 +499,19 @@ async def preload_models(
 def main() -> None:
     parser = argparse.ArgumentParser(description="MCP RAG Server")
     parser.add_argument("--config", type=str, default=None, help="Path to config.yaml")
+    parser.add_argument(
+        "--transport",
+        type=str,
+        choices=["stdio", "sse"],
+        default=os.environ.get("RAG_TRANSPORT", "stdio"),
+        help="MCP transport protocol",
+    )
+    parser.add_argument(
+        "--port", type=int, default=int(os.environ.get("PORT", "3000")), help="SSE port"
+    )
+    parser.add_argument(
+        "--host", type=str, default=os.environ.get("HOST", "127.0.0.1"), help="SSE host"
+    )
     args = parser.parse_args()
 
     _init_globals(args.config)
@@ -511,8 +524,8 @@ def main() -> None:
         for p in _g_config.watcher.default_watch_paths:
             _g_watcher.add_watch(p, recursive=_g_config.watcher.default_recursive)
 
-    logger.info("server_starting", extra={"transport": "stdio"})
-    _mcp.run(transport="stdio")
+    logger.info("server_starting", extra={"transport": args.transport, "port": args.port, "host": args.host})
+    _mcp.run(transport=args.transport, port=args.port, host=args.host)
 
 
 if __name__ == "__main__":
