@@ -1,8 +1,10 @@
 """Couche H1 — tags système par heuristiques.
 
-- Chemin, extension, segments de répertoire
+- Tokenisation du chemin, nom de fichier, segments de répertoire
+- Mapping keyword→tag unifié (type, domaine, priorite, statut)
 - Fichier .ragrules.yaml optionnel
-- Constat : exécution en quelques ms, aucun ML.
+- Préfixes de priorité (URGENT_, DRAFT_, etc.)
+- Exécution en quelques ms, aucun ML.
 """
 
 from __future__ import annotations
@@ -18,9 +20,122 @@ logger = logging.getLogger(__name__)
 
 REGEX_TIMEOUT = 0.2
 
+# ------------------------------------------------------------------
+# Unified keyword → tag mappings  (expand here to enrich auto-tagging)
+# ------------------------------------------------------------------
+
+KEYWORD_TO_TAG: dict[str, str] = {
+    # --- Document types ---
+    "facture": "type:facture",
+    "devis": "type:devis",
+    "proposition": "type:proposition",
+    "offre": "type:offre",
+    "contrat": "type:contrat",
+    "commande": "type:commande",
+    "bon": "type:bon",
+    "rapport": "type:rapport",
+    "compte-rendu": "type:compte-rendu",
+    "cr": "type:compte-rendu",
+    "note": "type:note",
+    "memo": "type:memo",
+    "procédure": "type:procedure",
+    "procedure": "type:procedure",
+    "manuel": "type:manuel",
+    "guide": "type:guide",
+    "présentation": "type:presentation",
+    "presentation": "type:presentation",
+    "formation": "type:formation",
+    "spécification": "type:specification",
+    "specification": "type:specification",
+    "cahier": "type:cahier",
+    "cctp": "type:cahier",
+    "police": "type:police",
+    "planning": "type:planning",
+    "emploi": "type:emploi-du-temps",
+    "cv": "type:cv",
+    "lettre": "type:lettre",
+    "attestation": "type:attestation",
+    "certificat": "type:certificat",
+    "relevé": "type:relevé",
+    "releve": "type:relevé",
+    "bilan": "type:bilan",
+    "budget": "type:budget",
+    "compte-rendu": "type:compte-rendu",
+    "procès-verbal": "type:pv",
+    "proces-verbal": "type:pv",
+
+    # --- Domaines ---
+    "commercial": "domaine:commercial",
+    "commerciale": "domaine:commercial",
+    "commerciaux": "domaine:commercial",
+    "ventes": "domaine:commercial",
+    "vente": "domaine:commercial",
+    "juridique": "domaine:juridique",
+    "juridiques": "domaine:juridique",
+    "financier": "domaine:financier",
+    "financière": "domaine:financier",
+    "financiere": "domaine:financier",
+    "finance": "domaine:financier",
+    "comptabilité": "domaine:comptabilite",
+    "comptabilite": "domaine:comptabilite",
+    "rh": "domaine:rh",
+    "ressources": "domaine:rh",
+    "humaines": "domaine:rh",
+    "personnel": "domaine:rh",
+    "technique": "domaine:technique",
+    "techniques": "domaine:technique",
+    "informatique": "domaine:technique",
+    "administratif": "domaine:administratif",
+    "administrative": "domaine:administratif",
+    "marketing": "domaine:marketing",
+    "communication": "domaine:communication",
+    "qualité": "domaine:qualite",
+    "qualite": "domaine:qualite",
+    "logistique": "domaine:logistique",
+    "production": "domaine:production",
+    "projet": "domaine:projet",
+    "projets": "domaine:projet",
+    "sécurité": "domaine:securite",
+    "securite": "domaine:securite",
+    "santé": "domaine:sante",
+    "sante": "domaine:sante",
+
+    # --- Priorité ---
+    "urgent": "priorite:urgent",
+    "importante": "priorite:important",
+    "important": "priorite:important",
+
+    # --- Confidentialité ---
+    "confidentiel": "confidentialite:confidentiel",
+    "confidentielle": "confidentialite:confidentiel",
+    "interne": "confidentialite:interne",
+    "public": "confidentialite:public",
+
+    # --- Statut ---
+    "brouillon": "statut:brouillon",
+    "draft": "statut:brouillon",
+    "valide": "statut:valide",
+    "validé": "statut:valide",
+    "final": "statut:final",
+    "signé": "statut:signe",
+    "signe": "statut:signe",
+    "annexe": "statut:annexe",
+    "révision": "statut:revision",
+    "revision": "statut:revision",
+}
+
+# Filename prefix hints (e.g. URGENT_contract.pdf)
+PRIORITY_PREFIXES: dict[str, str] = {
+    "urgent": "priorite:urgent",
+    "important": "priorite:important",
+    "confidentiel": "confidentialite:confidentiel",
+    "brouillon": "statut:brouillon",
+    "draft": "statut:brouillon",
+}
+
 
 class HeuristicTagger:
-    """Deterministic tag extraction from paths, names, and user rules."""
+    """Deterministic tag extraction from paths and names."""
 
     def __init__(self, max_rules_bytes: int = 102400) -> None:
         self.max_rules_bytes = max_rules_bytes
@@ -29,50 +144,63 @@ class HeuristicTagger:
         """Return system tags for a document path."""
         tags: list[str] = []
         tags.append(f"format:{path.suffix.lstrip('.').lower()}")
-        tags.extend(self._path_segments(path))
+        tags.extend(self._path_tags(path))
+        tags.extend(self._prefix_hints(path))
         tags.extend(self._apply_ragrules(path))
-        tags.extend(self._dirname_hints(path))
-        return list(dict.fromkeys(tags))  # preserve order, deduplicate
+        return list(dict.fromkeys(tags))
 
     # ------------------------------------------------------------------
-    # Segment extraction
+    # Unified keyword-based tagging
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _path_segments(path: Path) -> list[str]:
-        """Infer tags from path components like year:2026, client:acme."""
+    def _path_tags(self, path: Path) -> list[str]:
+        """Tokenize all path parts and match against KEYWORD_TO_TAG."""
         tags = []
+        seen_tags: set[str] = set()
         for part in path.parts:
+            if not part or part == "/":
+                continue
             lower = part.lower()
-            # Date/Year segments
+
+            # Year detection (e.g. 2024, 2025, 2026)
             if re.fullmatch(r"20[0-9]{2}", lower):
-                tags.append(f"year:{lower}")
-            # Type hints from file/dir names (split by separators)
+                tag = f"year:{lower}"
+                if tag not in seen_tags:
+                    tags.append(tag)
+                    seen_tags.add(tag)
+                continue
+
+            # Tokenize the part by common separators
             tokens = re.split(r"[_\-\s.]+", lower)
-            type_hints = {"facture", "devis", "contrat", "compte-rendu", "reunion", "note", "rapport"}
+
+            # Check multi-word keywords first (e.g. "compte-rendu")
+            for keyword, tag in KEYWORD_TO_TAG.items():
+                if "-" in keyword and keyword in lower and tag not in seen_tags:
+                    tags.append(tag)
+                    seen_tags.add(tag)
+
+            # Check individual tokens against keyword dict
             for token in tokens:
-                if token in type_hints:
-                    tags.append(f"type:{token}")
+                if token in KEYWORD_TO_TAG:
+                    tag = KEYWORD_TO_TAG[token]
+                    if tag not in seen_tags:
+                        tags.append(tag)
+                        seen_tags.add(tag)
+
         return tags
 
-    @staticmethod
-    def _dirname_hints(path: Path) -> list[str]:
-        """Extract directory-name hints."""
-        tags = []
-        dirnames = {p.lower() for p in path.parts}
-        domain_map = {
-            "juridique": "domaine:juridique",
-            "financier": "domaine:financier",
-            "finance": "domaine:financier",
-            "technique": "domaine:technique",
-            "commercial": "domaine:commercial",
-            "rh": "domaine:rh",
-            "administratif": "domaine:administratif",
-        }
-        for dirname, tag in domain_map.items():
-            if dirname in dirnames:
-                tags.append(tag)
-        return tags
+    def _prefix_hints(self, path: Path) -> list[str]:
+        """Check filename stem for priority/status prefixes."""
+        stem = path.stem.lower()
+        for prefix, tag in PRIORITY_PREFIXES.items():
+            # Check prefix at start (with separator)
+            if stem.startswith(prefix + "_") or stem.startswith(prefix + "-"):
+                return [tag]
+            # Check uppercase prefix (e.g. URGENT_doc.pdf)
+            upper = prefix.upper()
+            if stem.startswith(upper + "_") or stem.startswith(upper + "-"):
+                return [tag]
+        return []
 
     # ------------------------------------------------------------------
     # .ragrules.yaml
