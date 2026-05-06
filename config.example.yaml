@@ -1,0 +1,65 @@
+rag:
+  index_path: "./rag_index"
+  embedding:
+    model: "paraphrase-multilingual-MiniLM-L12-v2"
+    backend: "sentence-transformers"
+    fallback: "all-MiniLM-L6-v2"
+  chunk_size: 600
+  chunk_overlap: 60
+  max_chunks_per_doc: 1500
+  ocr_enabled: true
+  ocr_languages: ["fra", "eng"]
+  supported_extensions:
+    - .pdf
+    - .png
+    - .jpg
+    - .jpeg
+    - .txt
+    - .md
+    - .markdown
+    - .docx
+    - .csv
+    - .xlsx
+
+memory:
+  lazy_load: true
+  idle_ttl_embedder: 300
+  idle_ttl_llm: 120
+  idle_ttl_ocr: 180
+  gc_tick_seconds: 30
+  aggressive_gc: true
+
+tagging:
+  auto_tag_enabled: true
+  model_path: ""
+  n_ctx: 4096
+  n_threads: 4
+  timeout_ms: 10000
+  use_cache: true
+  cache_path: ".rag_tag_cache.db"
+  taxonomy:
+    domaine: ["financier", "juridique", "technique", "commercial", "rh", "administratif"]
+    priorite: ["urgent", "normal", "faible"]
+    confidentialite: ["public", "interne", "confidentiel"]
+  temperature: 0.1
+  seed: 42
+
+watcher:
+  enabled: false
+  debounce_ms: 2000
+  sync_deletions: true
+  max_workers: 4
+  default_watch_paths: []
+  default_recursive: true
+
+security:
+  ragrules_max_bytes: 102400
+  regex_timeout_ms: 200
+  yaml_safe_load_only: true
+
+logging:
+  level: "INFO"
+  format: "json"
+  file: "./logs/mcp_rag.log"
+  rotation: "50MB"
+  retention_days: 14
