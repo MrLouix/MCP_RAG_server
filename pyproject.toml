@@ -13,16 +13,22 @@ dependencies = [
     "uvicorn>=0.28.0",
     "starlette>=0.40.0",
     "chromadb>=0.6.0",
-    "sentence-transformers>=3.0.0",
-    "llama-cpp-python>=0.3.0",
+    # ONNX Runtime + tokenizers ONLY — no PyTorch, no CUDA, no optimum (only 3 packages)
+    "onnxruntime>=1.18.0",
+    "tokenizers>=0.20.0",
+    "huggingface_hub>=0.24.0",
+    # CPU-only — no torch, no CUDA
     "PyMuPDF>=1.24.0",
+    # easyocr removed — pulls torch + CUDA (~1.5 GB), not needed for basic PDF
     "pdfplumber>=0.11.0",
-    "easyocr>=1.7.0",
-    "Pillow>=10.0.0",
+    # llama-cpp-python removed — pulls CUDA bindings + compile chain (~200 MB), 
+    # H2 tagging replaced with lightweight keyword heuristics
     "python-docx>=1.1.0",
     "pandas>=2.2.0",
     "openpyxl>=3.1.0",
+    # Watch folder
     "watchdog>=4.0.0",
+    # Config & utils
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "PyYAML>=6.0",

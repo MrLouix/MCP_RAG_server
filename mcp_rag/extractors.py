@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +85,7 @@ def extract_pdf(
             pages_text.append(f"[Page {page_num + 1}]\n{text}")
         else:
             low_text_pages += 1
-            if ocr_enabled and model_manager:
+            if ocr_enabled and ocr_reader:
                 try:
                     pix = page.get_pixmap(dpi=200)
                     import tempfile
@@ -100,11 +100,12 @@ def extract_pdf(
                 except Exception as exc:
                     logger.warning("pdf_ocr_page_failed", extra={"page": page_num, "error": str(exc)})
 
+    num_pages = len(doc)
     doc.close()
     full_text = "\n\n".join(pages_text)
     return ExtractedDocument(
         text=full_text,
-        pages=len(doc),
+        pages=num_pages,
         file_type=".pdf",
         ocr_used=ocr_used,
         metadata={"low_text_pages": low_text_pages},
@@ -124,28 +125,8 @@ def extract_image(
     if not ocr_enabled:
         return ExtractedDocument(text="", file_type=path.suffix.lower(), metadata={"error": "ocr_disabled"})
 
-    reader = ocr_reader
-    if reader is None:
-        try:
-            import easyocr
-            reader = easyocr.Reader(ocr_languages or ["fra", "eng"], gpu=False)
-        except Exception as exc:
-            logger.error("ocr_init_failed", extra={"path": str(path), "error": str(exc)})
-            return ExtractedDocument(text="", file_type=path.suffix.lower(), metadata={"error": "ocr_init_failed"})
-
-    try:
-        results = reader.readtext(str(path), detail=0)
-        text = "\n".join(results)
-    except Exception as exc:
-        logger.error("ocr_failed", extra={"path": str(path), "error": str(exc)})
-        text = ""
-
-    return ExtractedDocument(
-        text=text,
-        pages=1,
-        file_type=path.suffix.lower(),
-        ocr_used=True,
-    )
+    # easyocr removed — no OCR fallback in CPU-only mode
+    return ExtractedDocument(text="", file_type=path.suffix.lower(), metadata={"error": "ocr_disabled_cpu_only"})
 
 
 # ------------------------------------------------------------------

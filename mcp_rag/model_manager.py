@@ -20,8 +20,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-import psutil
-from sentence_transformers import SentenceTransformer
+from psutil import Process
 
 from mcp_rag.config import Config
 
@@ -47,23 +46,26 @@ class ModelManager:
         self.rag_cfg = config.rag
         self.tag_cfg = config.tagging
 
+        # Embedder is now ONNX-based (no PyTorch), loaded lazily by Embedder class
+        # No heavy _load_fn needed — Embedder handles it
         self._slots: dict[str, _ModelSlot] = {
-            "embedder": _ModelSlot(name="embedder"),
+            "embedder": _ModelSlot(name="embedder", obj="ready", loaded=True),  # ONNX — no unload needed
             "llm": _ModelSlot(name="llm"),
             "ocr": _ModelSlot(name="ocr"),
         }
-        self._lock = asyncio.Lock()
-        self._process = psutil.Process()
+        self._lock = threading.Lock()
+        self._process = Process()
         self._gc_thread: threading.Thread | None = None
         self._stop_gc = threading.Event()
+        self._unload_cv = threading.Condition(self._lock)  # coordinate async/sync
 
     # ------------------------------------------------------------------
     # Public async API (safe to call from MCP tools)
     # ------------------------------------------------------------------
 
-    async def get_embedder(self) -> SentenceTransformer:
-        """Return embedder, loading on demand."""
-        return await self._get("embedder", self._load_embedder)
+    async def get_embedder(self):
+        """Return embedder — ONNX-based, no PyTorch. Always ready."""
+        return "ready"  # Embedder class handles its own lazy loading
 
     async def get_llm(self) -> Any:
         """Return LLM tagger, loading on demand."""
@@ -76,7 +78,7 @@ class ModelManager:
     async def unload(self, names: list[str] | None = None, force: bool = False) -> dict:
         """Unload models. If names is None, unload all.  Returns freed RAM estimate."""
         names = names or list(self._slots.keys())
-        async with self._lock:
+        with self._lock:
             ram_before = self._process.memory_info().rss
             for name in names:
                 slot = self._slots.get(name)
@@ -91,17 +93,20 @@ class ModelManager:
         """Explicitly preload given models (reduces latency before a known batch)."""
         results = {}
         for name in names:
-            loader = getattr(self, f"_load_{name}", None)
-            if loader:
-                await self._get(name, loader)
-                results[name] = "loaded"
+            if name == "embedder":
+                results[name] = "onnx_loaded_by_embedder"
             else:
-                results[name] = "unknown"
+                loader = getattr(self, f"_load_{name}", None)
+                if loader:
+                    await self._get(name, loader)
+                    results[name] = "loaded"
+                else:
+                    results[name] = "unknown"
         return {"loaded": results}
 
     async def get_status(self) -> dict:
         """Snapshot of current RAM usage per model."""
-        async with self._lock:
+        with self._lock:
             status = {}
             for slot in self._slots.values():
                 status[slot.name] = {
@@ -146,7 +151,7 @@ class ModelManager:
         """Check TTLs and unload stale models. Called by GC thread AND externally."""
         now = time.time()
         stale = []
-        async with self._lock:
+        with self._lock:
             for name, slot in self._slots.items():
                 if not slot.loaded or slot.last_used is None:
                     continue
@@ -168,7 +173,7 @@ class ModelManager:
             slot.last_used = time.time()
             return slot.obj
 
-        async with self._lock:
+        with self._lock:
             # Double-check inside lock
             if slot.loaded and slot.obj is not None:
                 slot.last_used = time.time()
@@ -194,17 +199,9 @@ class ModelManager:
         slot.loaded = False
         slot.last_used = None
 
-        # Try to release PyTorch/CUDA caches if applicable
+        # Try to release memory
+        import ctypes
         try:
-            import gc as _gc
-            _gc.collect()
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
-        try:
-            import ctypes
             ctypes.CDLL("libc.so.6").malloc_trim(0)
         except Exception:
             pass
@@ -213,29 +210,10 @@ class ModelManager:
     # Blocking loaders (run in thread pool via asyncio.to_thread)
     # ------------------------------------------------------------------
 
-    def _load_embedder(self) -> SentenceTransformer:
-        model_name = self.rag_cfg.embedding.model
-        try:
-            return SentenceTransformer(model_name)
-        except Exception:
-            logger.warning("embedder_fallback", extra={"from": model_name, "to": self.rag_cfg.embedding.fallback})
-            return SentenceTransformer(self.rag_cfg.embedding.fallback)
-
     def _load_llm(self) -> Any:
-        from llama_cpp import Llama
-
-        model_path = self.tag_cfg.model_path
-        if not model_path or not os.path.exists(model_path):
-            raise RuntimeError(f"LLM model not found at {model_path}")
-        return Llama(
-            model_path=model_path,
-            n_ctx=self.tag_cfg.n_ctx,
-            n_threads=self.tag_cfg.n_threads,
-            verbose=False,
-        )
+        # Disabled — no GPU/LLM tagging in CPU-only mode
+        raise RuntimeError("LLM tagging disabled (CPU-only mode)")
 
     def _load_ocr(self) -> Any:
-        import easyocr
-
-        langs = self.rag_cfg.ocr_languages or ["fra", "eng"]
-        return easyocr.Reader(langs, gpu=False)
+        # Disabled — easyocr removed (pulls PyTorch + CUDA ~1.5GB)
+        raise RuntimeError("OCR disabled — easyocr removed (CPU-only mode)")
