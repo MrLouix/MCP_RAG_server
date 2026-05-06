@@ -6,7 +6,7 @@ Wrapper around LangChain's RecursiveCharacterTextSplitter with consistent defaul
 import logging
 from typing import Sequence
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 logger = logging.getLogger(__name__)
 

@@ -47,9 +47,12 @@ class HeuristicTagger:
             # Date/Year segments
             if re.fullmatch(r"20[0-9]{2}", lower):
                 tags.append(f"year:{lower}")
-            # Well-known role names
-            if lower in ("facture", "devis", "contrat", "compte-rendu", "reunion"):
-                tags.append(f"type:{lower}")
+            # Type hints from file/dir names (split by separators)
+            tokens = re.split(r"[_\-\s.]+", lower)
+            type_hints = {"facture", "devis", "contrat", "compte-rendu", "reunion", "note", "rapport"}
+            for token in tokens:
+                if token in type_hints:
+                    tags.append(f"type:{token}")
         return tags
 
     @staticmethod

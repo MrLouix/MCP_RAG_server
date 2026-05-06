@@ -3,7 +3,7 @@
 import pytest
 
 # Skip if langchain is not yet installed (build in progress)
-pytest.importorskip("langchain")
+pytest.importorskip("langchain_text_splitters")
 
 from mcp_rag.chunker import Chunker
 
