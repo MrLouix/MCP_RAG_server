@@ -13,7 +13,7 @@ services:
     #   Remove ports, use entrypoint override
     # Option B: SSE (standalone, Hermes points to http://host:3000/sse)
     ports:
-      - "3000:3000"
+      - "3002:3000"
 
     environment:
       # stdio  → Hermes Agent launches container as subprocess

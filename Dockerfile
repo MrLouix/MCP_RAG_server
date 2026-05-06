@@ -41,7 +41,13 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 # Data volumes
-VOLUME ["/app/rag_index", "/app/models", "/app/documents"]
+VOLUME ["/app/rag_index", "/app/config", "/app/models", "/app/documents"]
+
+# Create working directories with open permissions
+# So Docker auto-creates them with write access instead of root-only
+RUN mkdir -p /app/documents /app/models /app/rag_index /app/config \
+    && chmod 777 /app/documents /app/models /app/rag_index /app/config \
+    && cp config.example.yaml /app/config/config.yaml
 
 EXPOSE 3000
 

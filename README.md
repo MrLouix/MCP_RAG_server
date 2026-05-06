@@ -63,13 +63,20 @@ cp config.example.yaml config/config.yaml
 
 ### 2. Préparer les dossiers de volumes
 
-Le conteneur a besoin des dossiers suivants **créés sur le host** avant le démarrage :
+**Important** : Ces dossiers doivent exister sur le host **avant** de lancer `docker compose up`.
+Si Docker les crée automatiquement, ils appartiendront à `root` et tu ne pourras pas y écrire.
 
 ```bash
 mkdir -p config        # ← déjà fait ci-dessus
 mkdir -p rag_index     # ← index ChromaDB (persisté)
-mkdir -p documents     # ← vos fichiers à indexer
+mkdir -p documents     # ← vos fichiers à indexer/watch
 mkdir -p models        # ← modèles GGUF (optionnel, pour tagging H2)
+```
+
+Si des dossiers existent déjà avec des permissions `root`, corrige-les :
+
+```bash
+sudo chown -R $(id -u):$(id -g) documents models rag_index
 ```
 
 ### 3. Lancer avec Docker Compose
