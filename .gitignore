@@ -38,6 +38,8 @@ ENV/
 
 # RAG index (generated at runtime)
 rag_index/
+test_rag_index*/
+test*.db
 .rag_tag_cache.db
 .ragrules.yaml
 
@@ -57,9 +59,3 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
-test_rag_index/
-test_rag_index2/
-*.db
-.rag_tag_cache.db
-.coverage
-logs/
