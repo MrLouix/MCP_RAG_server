@@ -25,6 +25,11 @@ def setup_logging(level: str = "INFO", fmt: str = "json", file_path: str | None 
     """Configure root logger for the application."""
     root = logging.getLogger()
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
+    # Clean up uvicorn loggers to prevent duplicated / conflicting handlers
+    for uv_name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
+        uv_logger = logging.getLogger(uv_name)
+        uv_logger.handlers.clear()
+        uv_logger.propagate = True  # let uvicorn logs flow through root handler
     root.handlers.clear()
 
     if fmt == "json":

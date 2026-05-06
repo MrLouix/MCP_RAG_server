@@ -79,7 +79,6 @@ class RagConfig(BaseModel):
 class Config(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="MCP_RAG_",
-        yaml_file="config.yaml",
         env_nested_delimiter="__",
     )
 

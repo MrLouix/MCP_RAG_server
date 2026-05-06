@@ -101,8 +101,17 @@ class WatchManager:
 
     def add_watch(self, path: str, recursive: bool = True) -> str:
         """Add a directory to watch. Returns watcher_id."""
-        if path in self._observers:
-            return f"wd_{path}"
+        resolved = Path(path).resolve()
+        if not resolved.exists():
+            logger.warning("watch_path_not_found", extra={"path": path})
+            return f"wd_{path}_not_found"
+        if not resolved.is_dir():
+            logger.warning("watch_path_not_dir", extra={"path": path})
+            return f"wd_{path}_not_dir"
+
+        watched_path = str(resolved)
+        if watched_path in self._observers:
+            return f"wd_{watched_path}"
 
         if self._queue is None:
             raise RuntimeError("WatchManager not started")
@@ -113,11 +122,11 @@ class WatchManager:
             supported_extensions={e.lower() for e in self.rag_cfg.supported_extensions},
         )
         observer = Observer()
-        observer.schedule(handler, path=str(path), recursive=recursive)
+        observer.schedule(handler, path=watched_path, recursive=recursive)
         observer.start()
-        self._observers[path] = observer
-        logger.info("watch_started", extra={"path": path, "recursive": recursive})
-        return f"wd_{path}"
+        self._observers[watched_path] = observer
+        logger.info("watch_started", extra={"path": watched_path, "recursive": recursive})
+        return f"wd_{watched_path}"
 
     def remove_watch(self, path: str) -> bool:
         """Stop watching a directory."""
