@@ -35,8 +35,10 @@ class Embedder:
             self._model_name = getattr(
                 model,
                 "model_name",
-                model.get_sentence_embedding_dimension(),
+                "sentence-transformers",
             )
+            dim = model.get_embedding_dimension()
+            logger.debug("embedding_dim", extra={"dim": dim})
         return embeddings
 
     async def get_model_name(self) -> str:
