@@ -38,7 +38,8 @@ ENV/
 
 # RAG index (generated at runtime)
 rag_index/
-test_rag_index*/
+docs/
+config/
 test*.db
 .rag_tag_cache.db
 .ragrules.yaml

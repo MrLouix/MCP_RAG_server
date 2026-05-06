@@ -19,7 +19,7 @@ services:
       # stdio  → Hermes Agent launches container as subprocess
       # sse    → Container exposes HTTP SSE endpoint
       RAG_TRANSPORT: sse
-      RAG_CONFIG: /app/config.yaml
+      RAG_CONFIG: /app/config/config.yaml
       RAG_LOG_LEVEL: INFO
       PORT: 3000
       HOST: 0.0.0.0
@@ -28,11 +28,11 @@ services:
       # ChromaDB index + SQLite path_index
       - ./rag_index:/app/rag_index
       # Company documents (ingest / watch)
-      - ~/documents:/app/documents:ro
+      - ./documents:/app/documents:ro
       # LLM models (GGUF)
       - ./models:/app/models:ro
-      # Config file
-      - ./config.yaml:/app/config.yaml:ro
+      # Config directory
+      - ./config:/app/config:ro
 
     # Resource limits
     deploy:
