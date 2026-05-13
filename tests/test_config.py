@@ -7,8 +7,10 @@ def test_default_config():
     cfg = Config()
     assert cfg.rag.chunk_size == 600
     assert cfg.rag.chunk_overlap == 60
-    assert cfg.memory.lazy_load is True
-    assert cfg.memory.idle_ttl_embedder == 300
+    assert cfg.ollama.base_url == "http://172.28.128.1:11434"
+    assert cfg.ollama.embed_model == "nomic-embed-text"
+    assert cfg.ollama.tag_model == "qwen2.5:3b"
+    assert cfg.ollama.vision_model == "minicpm-v"
     assert cfg.tagging.auto_tag_enabled is True
     assert cfg.watcher.debounce_ms == 2000
 
@@ -23,3 +25,17 @@ def test_load_config_nonexistent():
     cfg = load_config("/nonexistent/path.yaml")
     assert isinstance(cfg, Config)
     assert cfg.rag.chunk_size == 600
+
+
+def test_ollama_config_defaults():
+    cfg = Config()
+    assert cfg.ollama.timeout_s == 30.0
+    assert cfg.ollama.embed_timeout_s == 120.0
+    assert cfg.ollama.max_retries == 3
+    assert cfg.ollama.auto_pull is False
+
+
+def test_tagging_taxonomy_includes_langue_entites():
+    cfg = Config()
+    assert "langue" in cfg.tagging.taxonomy
+    assert "entites" in cfg.tagging.taxonomy

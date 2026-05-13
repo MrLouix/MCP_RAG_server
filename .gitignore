@@ -36,8 +36,13 @@ ENV/
 *.swo
 *~
 
+# Claude
+.claude
+CLAUDE.md
+
 # RAG index (generated at runtime)
 rag_index/*
+rag_index_v2/*
 docs/
 config/*
 test*.db
@@ -60,6 +65,7 @@ models/*
 .coverage
 htmlcov/
 test_rag*/
+test_report.md
 
 # OS
 .DS_Store

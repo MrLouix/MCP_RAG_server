@@ -260,6 +260,12 @@ class Storage:
         with conn:
             conn.execute("DELETE FROM path_index WHERE abs_path = ?", (abs_path,))
 
+    def delete_from_path_index_by_doc_id(self, doc_id: str) -> None:
+        """Remove all path entries for a given doc_id."""
+        conn = self._ensure_path_index()
+        with conn:
+            conn.execute("DELETE FROM path_index WHERE doc_id = ?", (doc_id,))
+
     def get_orphaned_paths(self) -> list[str]:
         """Return paths in the index whose local files no longer exist."""
         conn = self._ensure_path_index()

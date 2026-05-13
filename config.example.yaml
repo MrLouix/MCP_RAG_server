@@ -1,9 +1,15 @@
+ollama:
+  base_url: "http://172.28.128.1:11434"
+  embed_model: "nomic-embed-text"
+  tag_model: "qwen2.5:3b"
+  vision_model: "minicpm-v"
+  timeout_s: 30
+  embed_timeout_s: 120
+  max_retries: 3
+  auto_pull: false
+
 rag:
   index_path: "./rag_index"
-  embedding:
-    model: "paraphrase-multilingual-MiniLM-L12-v2"
-    backend: "sentence-transformers"
-    fallback: "all-MiniLM-L6-v2"
   chunk_size: 600
   chunk_overlap: 60
   max_chunks_per_doc: 1500
@@ -21,25 +27,16 @@ rag:
     - .csv
     - .xlsx
 
-memory:
-  lazy_load: true
-  idle_ttl_embedder: 300
-  idle_ttl_llm: 120
-  idle_ttl_ocr: 180
-  gc_tick_seconds: 30
-  aggressive_gc: true
-
 tagging:
   auto_tag_enabled: true
-  model_path: ""
-  n_ctx: 4096
-  n_threads: 4
-  timeout_ms: 10000
+  timeout_ms: 30000
   use_cache: true
   cache_path: ".rag_tag_cache.db"
   taxonomy:
     domaine: ["financier", "juridique", "technique", "commercial", "rh", "administratif"]
     priorite: ["urgent", "normal", "faible"]
+    langue: "ISO 639-1"
+    entites: ["array", "string"]
     confidentialite: ["public", "interne", "confidentiel"]
   temperature: 0.1
   seed: 42

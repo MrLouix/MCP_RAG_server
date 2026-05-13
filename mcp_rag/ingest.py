@@ -1,21 +1,22 @@
-"""Main ingestion pipeline — orchestrates extractors, tagging, chunking, embeddings, storage."""
+"""Main ingestion pipeline — orchestrates extractors, tagging, chunking, embeddings, storage.
+
+All ML inference (embedding, tagging H2, vision OCR) is delegated to an external Ollama instance.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import datetime
 import json
 import logging
-import os
 import time
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from mcp_rag.chunker import Chunker
 from mcp_rag.config import Config
 from mcp_rag.embeddings import Embedder
-from mcp_rag.extractors import clean_text, extract_file, ExtractedDocument
-from mcp_rag.model_manager import ModelManager
+from mcp_rag.extractors import clean_text, extract_file
+from mcp_rag.ollama_client import OllamaClient
 from mcp_rag.storage import Storage
 from mcp_rag.tagging.engine import TaggingEngine
 from mcp_rag.utils.hashing import sha256_file, short_doc_id
@@ -30,14 +31,14 @@ class IngestPipeline:
     def __init__(
         self,
         config: Config,
-        model_manager: ModelManager,
+        ollama: OllamaClient,
         storage: Storage,
     ) -> None:
         self.cfg = config
-        self.mm = model_manager
+        self.ollama = ollama
         self.storage = storage
         self.chunker = Chunker(config.rag.chunk_size, config.rag.chunk_overlap)
-        self.embedder = Embedder(model_manager)
+        self.embedder = Embedder(ollama, config.ollama.embed_model)
         self.tagger = TaggingEngine(config) if config.tagging.auto_tag_enabled else None
         self.locks = DocLockRegistry()
 
@@ -61,17 +62,8 @@ class IngestPipeline:
         errors = 0
         tagging_stats = {"cache_hits": 0, "llm_inferences": 0, "llm_failures": 0, "avg_inference_ms": 0.0}
 
-        # Load OCR once upfront if needed
-        ocr_reader = None
-        if self.cfg.rag.ocr_enabled:
-            try:
-                ocr_reader = await self.mm.get_ocr()
-            except Exception:
-                logger.warning("ocr_load_failed")
-
-        # Process files sequentially with per-docid locking
         for path in files:
-            result = await self._ingest_single(path, ocr_reader, workspace, tagging_stats)
+            result = await self._ingest_single(path, workspace, tagging_stats)
             if result["status"] == "ingested":
                 ingested += 1
             elif result["status"] == "skipped":
@@ -93,7 +85,6 @@ class IngestPipeline:
     async def _ingest_single(
         self,
         path: Path,
-        ocr_reader: Any | None,
         workspace: str,
         tagging_stats: dict[str, Any],
     ) -> dict[str, Any]:
@@ -106,15 +97,19 @@ class IngestPipeline:
             if existing and existing.get("doc_id") == doc_id:
                 return {"status": "skipped", "reason": "already_indexed", "path": str(path)}
 
-            # Extract
-            t_extract = time.time()
-            extracted = await asyncio.to_thread(
-                extract_file,
-                path=path,
-                ocr_reader=ocr_reader,
-                ocr_enabled=self.cfg.rag.ocr_enabled,
-                ocr_languages=self.cfg.rag.ocr_languages,
-            )
+            # Extract (async — may call Ollama vision for OCR)
+            try:
+                extracted = await extract_file(
+                    path=path,
+                    ocr_enabled=self.cfg.rag.ocr_enabled,
+                    ocr_languages=self.cfg.rag.ocr_languages,
+                    ollama_client=self.ollama,
+                    vision_model=self.cfg.ollama.vision_model,
+                )
+            except Exception as exc:
+                logger.warning("extraction_failed", extra={"path": str(path), "error": str(exc)})
+                return {"status": "error", "reason": str(exc), "path": str(path)}
+
             if not extracted.text.strip():
                 logger.info("empty_extraction", extra={"path": str(path)})
                 return {"status": "skipped", "reason": "empty_text", "path": str(path)}
@@ -127,10 +122,18 @@ class IngestPipeline:
             if self.tagger:
                 preview = text[:6000]  # ~1500 tokens proxy
                 try:
-                    tags_result = await self.tagger.tag_document(path, preview, content_hash, self.mm)
-                    if tags_result.get("llm_status") == "ok":
-                        tagging_stats["llm_inferences"] += 1
-                    elif tags_result.get("llm_status") == "timeout":
+                    tags_result = await self.tagger.tag_document(
+                        path, preview, content_hash,
+                        ollama_client=self.ollama,
+                        tag_model=self.cfg.ollama.tag_model,
+                    )
+                    llm_status = tags_result.get("llm_status", "disabled")
+                    if llm_status == "ok":
+                        if tags_result.get("cached"):
+                            tagging_stats["cache_hits"] += 1
+                        else:
+                            tagging_stats["llm_inferences"] += 1
+                    elif llm_status in ("timeout", "error", "unreachable"):
                         tagging_stats["llm_failures"] += 1
                 except Exception as exc:
                     logger.warning("tagging_failed", extra={"path": str(path), "error": str(exc)})
@@ -138,7 +141,7 @@ class IngestPipeline:
             # Chunk
             chunks = self.chunker.split(text, max_chunks=self.cfg.rag.max_chunks_per_doc)
 
-            # Embed
+            # Embed via Ollama
             model_name = await self.embedder.get_model_name()
             embeddings = await self.embedder.embed(chunks, batch_size=32)
 

@@ -104,18 +104,18 @@ class WatchManager:
         # Dependencies injected by server
         self._pipeline: Any | None = None
         self._storage: Any | None = None
-        self._model_manager: Any | None = None
+        self._ollama: Any | None = None
 
     def inject_dependencies(
         self,
         pipeline: Any,
         storage: Any,
-        model_manager: Any,
+        ollama_client: Any,
     ) -> None:
         """Inject server globals so the consumer can access them."""
         self._pipeline = pipeline
         self._storage = storage
-        self._model_manager = model_manager
+        self._ollama = ollama_client
 
     def start(self, event_loop: asyncio.AbstractEventLoop) -> None:
         self._event_loop = event_loop
@@ -165,19 +165,11 @@ class WatchManager:
             try:
                 logger.info("watcher_ingesting_file", extra={"path": path_str})
 
-                # Load OCR optionally
-                ocr_reader = None
-                if self.rag_cfg.ocr_enabled and self._model_manager is not None:
-                    try:
-                        ocr_reader = await self._model_manager.get_ocr()
-                    except Exception:
-                        logger.warning("watcher_ocr_load_failed")
-
                 tagging_stats: dict[str, Any] = {
                     "cache_hits": 0, "llm_inferences": 0,
                     "llm_failures": 0, "avg_inference_ms": 0.0,
                 }
-                result = await self._pipeline._ingest_single(p, ocr_reader, "default", tagging_stats)
+                result = await self._pipeline._ingest_single(p, "default", tagging_stats)
                 logger.info("watcher_file_ingested", extra={
                     "path": path_str,
                     "status": result.get("status"),

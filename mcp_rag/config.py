@@ -1,4 +1,4 @@
-"""Pydantic configuration model for the MCP RAG server."""
+"""Pydantic configuration model for the MCP RAG server (v4 — Ollama backend)."""
 
 from pathlib import Path
 from typing import Any
@@ -7,32 +7,27 @@ from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class EmbeddingConfig(BaseModel):
-    model: str = Field(default="paraphrase-multilingual-MiniLM-L12-v2")
-    backend: str = Field(default="sentence-transformers")
-    fallback: str = Field(default="all-MiniLM-L6-v2")
-
-
-class MemoryConfig(BaseModel):
-    lazy_load: bool = Field(default=True)
-    idle_ttl_embedder: int = Field(default=300)
-    idle_ttl_llm: int = Field(default=120)
-    idle_ttl_ocr: int = Field(default=180)
-    gc_tick_seconds: int = Field(default=30)
-    aggressive_gc: bool = Field(default=True)
+class OllamaConfig(BaseModel):
+    base_url: str = Field(default="http://172.28.128.1:11434")
+    embed_model: str = Field(default="nomic-embed-text")
+    tag_model: str = Field(default="qwen2.5:3b")
+    vision_model: str = Field(default="minicpm-v")
+    timeout_s: float = Field(default=30.0)
+    embed_timeout_s: float = Field(default=120.0)
+    max_retries: int = Field(default=3)
+    auto_pull: bool = Field(default=False)
 
 
 class TaggingConfig(BaseModel):
     auto_tag_enabled: bool = Field(default=True)
-    model_path: str = Field(default="")
-    n_ctx: int = Field(default=4096)
-    n_threads: int = Field(default=4)
-    timeout_ms: int = Field(default=10000)
+    timeout_ms: int = Field(default=30000)
     use_cache: bool = Field(default=True)
     cache_path: str = Field(default=".rag_tag_cache.db")
     taxonomy: dict[str, Any] = Field(default_factory=lambda: {
         "domaine": ["financier", "juridique", "technique", "commercial", "rh", "administratif"],
         "priorite": ["urgent", "normal", "faible"],
+        "langue": "ISO 639-1",
+        "entites": ["array", "string"],
         "confidentialite": ["public", "interne", "confidentiel"],
     })
     temperature: float = Field(default=0.1)
@@ -64,7 +59,6 @@ class LoggingConfig(BaseModel):
 
 class RagConfig(BaseModel):
     index_path: str = Field(default="./rag_index")
-    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     chunk_size: int = Field(default=600)
     chunk_overlap: int = Field(default=60)
     max_chunks_per_doc: int = Field(default=1500)
@@ -82,8 +76,8 @@ class Config(BaseSettings):
         env_nested_delimiter="__",
     )
 
+    ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     rag: RagConfig = Field(default_factory=RagConfig)
-    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     tagging: TaggingConfig = Field(default_factory=TaggingConfig)
     watcher: WatcherConfig = Field(default_factory=WatcherConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)

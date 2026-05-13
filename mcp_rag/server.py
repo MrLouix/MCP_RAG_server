@@ -1,12 +1,12 @@
 """FastMCP server exposing the local RAG index to Hermes Agent.
 
 15 tools: ingest, search, CRUD, watch, tagging, diagnose, model management.
+All ML inference delegated to an external Ollama instance.
 """
 
 from __future__ import annotations
 import argparse
 import asyncio
-from collections import Counter
 import json
 import logging
 import os
@@ -18,7 +18,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp_rag.config import load_config, Config
 from mcp_rag.ingest import IngestPipeline
 from mcp_rag.logging_config import setup_logging
-from mcp_rag.model_manager import ModelManager
+from mcp_rag.ollama_client import OllamaClient
 from mcp_rag.storage import Storage
 from mcp_rag.watcher.fs_watcher import WatchManager
 
@@ -28,14 +28,14 @@ logger = logging.getLogger(__name__)
 # Global state (initialized in main())
 # ------------------------------------------------------------------
 _g_config: Config | None = None
-_g_model_manager: ModelManager | None = None
+_g_ollama: OllamaClient | None = None
 _g_storage: Storage | None = None
 _g_pipeline: IngestPipeline | None = None
 _g_watcher: WatchManager | None = None
 
 _mcp = FastMCP(
     "RAG Documents",
-    instructions="Local RAG server with auto-tagging, watch folder, and lazy model loading.",
+    instructions="Local RAG server with auto-tagging, watch folder, and Ollama backend.",
 )
 
 # ------------------------------------------------------------------
@@ -44,19 +44,23 @@ _mcp = FastMCP(
 
 def _init_globals(config_path: str | None = None) -> None:
     """One-shot initialization of server globals."""
-    global _g_config, _g_model_manager, _g_storage, _g_pipeline, _g_watcher
+    global _g_config, _g_ollama, _g_storage, _g_pipeline, _g_watcher
     _g_config = load_config(config_path)
     setup_logging(
         level=_g_config.logging.level,
         fmt=_g_config.logging.format,
         file_path=_g_config.logging.file,
     )
-    _g_model_manager = ModelManager(_g_config)
-    _g_model_manager.start_gc_thread()
+    _g_ollama = OllamaClient(
+        base_url=_g_config.ollama.base_url,
+        timeout_s=_g_config.ollama.timeout_s,
+        embed_timeout_s=_g_config.ollama.embed_timeout_s,
+        max_retries=_g_config.ollama.max_retries,
+    )
     _g_storage = Storage(_g_config.rag.index_path)
-    _g_pipeline = IngestPipeline(_g_config, _g_model_manager, _g_storage)
+    _g_pipeline = IngestPipeline(_g_config, _g_ollama, _g_storage)
     _g_watcher = WatchManager(_g_config)
-    _g_watcher.inject_dependencies(_g_pipeline, _g_storage, _g_model_manager)
+    _g_watcher.inject_dependencies(_g_pipeline, _g_storage, _g_ollama)
     logger.info("server_initialized", extra={"config": config_path or "default"})
 
 
@@ -94,30 +98,31 @@ async def search_docs(
     workspace: str = "default",
 ) -> dict[str, Any]:
     """Semantic search with optional tag filtering."""
-    if _g_model_manager is None or _g_storage is None:
+    if _g_ollama is None or _g_storage is None or _g_config is None:
         return {"error": "Server not initialized"}
 
     from mcp_rag.embeddings import Embedder
-    embedder = Embedder(_g_model_manager)
+    embedder = Embedder(_g_ollama, _g_config.ollama.embed_model)
     query_vec = await embedder.embed([query], batch_size=1)
     model_name = await embedder.get_model_name()
 
-    # First: broad semantic search (no tag filter in ChromaDB to avoid complexity)
+    # Broad semantic search (tag filtering at application level)
     raw_results = _g_storage.search(
         query_embedding=query_vec[0],
-        top_k=top_k * 3,  # oversample for application-level filtering
+        top_k=top_k * 3,
         tags=None,
         filters=filters,
         workspace=workspace,
         embedding_model=model_name,
     )
 
-    # Second: filter by tags at application level
+    # Filter by tags at application level
     filtered = []
     if tags:
         for hit in raw_results:
             meta = hit.get("metadata", {})
-            merged = json.loads(meta.get("tags", "{}")).get("system", []) + json.loads(meta.get("tags", "{}")).get("semantic", [])
+            tags_data = json.loads(meta.get("tags", "{}"))
+            merged = tags_data.get("system", []) + tags_data.get("semantic", [])
             if tags_mode == "all":
                 ok = all(t in merged for t in tags)
             elif tags_mode == "any":
@@ -170,7 +175,6 @@ async def list_documents(
     doc_ids = sorted(_g_storage.list_doc_ids(workspace))
     total = len(doc_ids)
 
-    # Apply offset+limit
     paginated = doc_ids[offset:offset + limit]
 
     documents = []
@@ -179,21 +183,23 @@ async def list_documents(
         if meta:
             first = meta[0]
             m = first.get("metadata", {})
+            tags_data = json.loads(m.get("tags", "{}"))
             documents.append({
                 "doc_id": did,
                 "name": m.get("source_name", ""),
                 "type": m.get("file_type", ""),
                 "chunks_count": m.get("total_chunks", 0),
                 "ingested_at": m.get("ingested_at", ""),
-                "tags": json.loads(m.get("tags", "{}")),
+                "tags": tags_data,
                 "orphaned": m.get("orphaned", False),
             })
 
-    # Filter by tags at application level (ChromaDB $contains is limited)
+    # Filter by tags at application level
     if tags:
         filtered = []
         for doc in documents:
-            merged = json.loads(doc.get("tags", "{}")).get("system", []) + json.loads(doc.get("tags", "{}")).get("semantic", [])
+            tags_data = doc.get("tags", {})
+            merged = tags_data.get("system", []) + tags_data.get("semantic", [])
             if tags_mode == "all":
                 ok = all(t in merged for t in tags)
             elif tags_mode == "any":
@@ -227,15 +233,11 @@ async def delete_document(
     workspace: str = "default",
 ) -> dict[str, Any]:
     """Remove a document and all its chunks from the index."""
-    if _g_storage is None:
+    if _g_storage is None or _g_config is None:
         return {"error": "Server not initialized"}
-    model_name = ""
-    if _g_model_manager:
-        from mcp_rag.embeddings import Embedder
-        model_name = await Embedder(_g_model_manager).get_model_name()
+    model_name = _g_config.ollama.embed_model
     _g_storage.delete_doc_chunks(doc_id, workspace, model_name)
-    # Also clean path_index if we can resolve it
-    _g_storage.clear_path_index(workspace)  # TODO: selective deletion by doc_id
+    _g_storage.delete_from_path_index_by_doc_id(doc_id)
     return {"status": "deleted", "doc_id": doc_id, "workspace": workspace}
 
 
@@ -267,21 +269,24 @@ async def get_stats(
     workspace: str = "default",
 ) -> dict[str, Any]:
     """Get current index statistics."""
-    if _g_storage is None:
+    if _g_storage is None or _g_config is None:
         return {"error": "Server not initialized"}
     total_docs = len(_g_storage.list_doc_ids(workspace))
     total_chunks = _g_storage.count_chunks(workspace)
     model_status = {}
-    if _g_model_manager:
-        model_status = await _g_model_manager.get_status()
+    if _g_ollama:
+        try:
+            model_status = await _g_ollama.healthcheck()
+        except Exception:
+            model_status = {"reachable": False}
     watcher_info = []
     if _g_watcher:
         watcher_info = _g_watcher.list_active()
     return {
         "total_docs": total_docs,
         "total_chunks": total_chunks,
-        "embedding_model": "sentence-transformers",  # TODO read from collection metadata
-        "tag_model": (_g_config.tagging.model_path.split("/")[-1] if _g_config else ""),
+        "embedding_model": _g_config.ollama.embed_model,
+        "tag_model": _g_config.ollama.tag_model,
         "active_watchers": watcher_info,
         "model_status": model_status,
         "workspace": workspace,
@@ -305,9 +310,7 @@ async def watch_directory(
     if _g_watcher is None:
         return {"error": "Server not initialized"}
     if enabled:
-        # Lazy-start the watcher if not already started (e.g. when config has watcher.enabled=false)
         if _g_watcher._queue is None:
-            import asyncio
             loop = asyncio.get_running_loop()
             _g_watcher.start(loop)
             logger.info("watcher_started_lazy")
@@ -342,16 +345,17 @@ async def get_tags(
     docs = await list_documents(limit=10000, workspace=workspace)
     tag_counts: dict[str, dict[str, Any]] = {}
     for doc in docs.get("documents", []):
+        tags_data = doc.get("tags", {})
         for origin in ("system", "semantic"):
-            for tag in json.loads(doc.get("tags", "{}")).get(origin, []):
+            for tag in tags_data.get(origin, []):
                 if tag not in tag_counts:
                     tag_counts[tag] = {"tag": tag, "count": 0, "origin": origin}
                 tag_counts[tag]["count"] += 1
-    tags = list(tag_counts.values())
+    tags_list = list(tag_counts.values())
     if query:
         query_lower = query.lower()
-        tags = [t for t in tags if query_lower in t["tag"].lower()]
-    return {"tags": tags, "total_tags": len(tag_counts)}
+        tags_list = [t for t in tags_list if query_lower in t["tag"].lower()]
+    return {"tags": tags_list, "total_tags": len(tag_counts)}
 
 
 # ------------------------------------------------------------------
@@ -365,17 +369,14 @@ async def tag_document(
     workspace: str = "default",
 ) -> dict[str, Any]:
     """Retag a single document without full re-ingestion."""
-    if _g_storage is None:
+    if _g_storage is None or _g_ollama is None or _g_config is None:
         return {"error": "Server not initialized"}
     chunks = _g_storage.get_document_chunks(doc_id, workspace)
     if not chunks:
         return {"error": "Document not found", "doc_id": doc_id}
 
-    import json
-    from pathlib import Path
     from mcp_rag.tagging.heuristics import HeuristicTagger
 
-    # Get source path from metadata
     meta = chunks[0].get("metadata", {})
     source_path = meta.get("source_path", "")
     old_tags = json.loads(meta.get("tags", "{}"))
@@ -385,7 +386,13 @@ async def tag_document(
 
     # Recalculate H1 tags
     h1 = HeuristicTagger().tag_document(Path(source_path))
-    new_tags = {"system": h1, "semantic": old_tags.get("semantic", []), "model": old_tags.get("model", ""), "inferred_at": old_tags.get("inferred_at", ""), "llm_status": "disabled"}
+    new_tags = {
+        "system": h1,
+        "semantic": old_tags.get("semantic", []),
+        "model": old_tags.get("model", ""),
+        "inferred_at": old_tags.get("inferred_at", ""),
+        "llm_status": "disabled",
+    }
 
     # Update all chunks in ChromaDB
     coll = _g_storage.get_collection(workspace)
@@ -407,7 +414,7 @@ async def reindex_all(
     confirm: bool = False,
     workspace: str = "default",
 ) -> dict[str, Any]:
-    """Reindex all documents with a new embedding model."""
+    """Reindex all documents with a new embedding model via Ollama."""
     if not confirm:
         return {"error": "confirm must be True to reindex"}
     # TODO: implement full reindex with path_index traversal
@@ -427,12 +434,27 @@ async def reindex_all(
 async def diagnose(
     workspace: str = "default",
 ) -> dict[str, Any]:
-    """Run a healthcheck on the RAG system."""
+    """Run a healthcheck on the RAG system (Ollama, ChromaDB, disk, watchers)."""
     import shutil
-    warnings = []
+    warnings: list[str] = []
+
+    # Ollama
+    ollama_status: dict[str, Any] = {"reachable": False, "base_url": ""}
+    if _g_ollama and _g_config:
+        required = [
+            _g_config.ollama.embed_model,
+            _g_config.ollama.tag_model,
+            _g_config.ollama.vision_model,
+        ]
+        ollama_status = await _g_ollama.healthcheck(required_models=required)
+        if not ollama_status.get("reachable"):
+            warnings.append("Ollama instance unreachable")
+        missing = ollama_status.get("missing_models", [])
+        if missing:
+            warnings.append(f"Missing Ollama models: {', '.join(missing)}")
 
     # ChromaDB
-    collections = []
+    collections: list[str] = []
     chroma_ok = False
     if _g_storage is not None:
         try:
@@ -442,8 +464,8 @@ async def diagnose(
             chroma_ok = False
 
     # Disk
-    index_size_mb = 0
-    free_gb = 0
+    index_size_mb = 0.0
+    free_gb = 0.0
     try:
         index_path = Path(_g_config.rag.index_path) if _g_config else Path("./rag_index")
         if index_path.exists():
@@ -454,28 +476,23 @@ async def diagnose(
     except Exception:
         pass
 
-    # Models
-    models_info = {"embedder": {"installed": True}, "llm": {"installed": False}, "ocr": {"installed": True}}
-    if _g_config and _g_config.tagging.model_path and Path(_g_config.tagging.model_path).exists():
-        models_info["llm"]["installed"] = True
-
     # Orphans
-    orphans = []
+    orphans: list[str] = []
     if _g_storage:
         orphans = _g_storage.get_orphaned_paths()
         if orphans:
             warnings.append(f"{len(orphans)} orphaned paths detected")
 
     # Watchers
-    watchers = []
+    watchers: list[dict[str, Any]] = []
     if _g_watcher:
         watchers = _g_watcher.list_active()
 
     return {
         "status": "ok" if not warnings else "warning",
+        "ollama": ollama_status,
         "chroma": {"reachable": chroma_ok, "collections": collections},
         "disk": {"index_size_mb": index_size_mb, "free_gb": free_gb, "warning": None},
-        "models": models_info,
         "watchers": watchers,
         "orphans": {"count": len(orphans), "examples": orphans[:5]},
         "warnings": warnings,
@@ -483,35 +500,69 @@ async def diagnose(
 
 
 # ------------------------------------------------------------------
-# 13/14/15. Model management tools
+# 13/14/15. Model management tools (delegated to Ollama)
 # ------------------------------------------------------------------
 
 @_mcp.tool()
 async def get_model_status() -> dict[str, Any]:
-    """Show which ML models are currently loaded in RAM."""
-    if _g_model_manager is None:
+    """Show which ML models are currently loaded on the Ollama instance."""
+    if _g_ollama is None or _g_config is None:
         return {"error": "Server not initialized"}
-    return await _g_model_manager.get_status()
+    try:
+        running = await _g_ollama.list_running()
+    except Exception as exc:
+        return {"error": f"Ollama unreachable: {exc}", "ollama_url": _g_config.ollama.base_url}
+    return {
+        "ollama_url": _g_config.ollama.base_url,
+        "ollama_reachable": True,
+        "models_running": [
+            {"name": m.get("name", ""), "size_mb": round(m.get("size", 0) / (1024 * 1024), 1)}
+            for m in running
+        ],
+        "embed_model": _g_config.ollama.embed_model,
+        "tag_model": _g_config.ollama.tag_model,
+        "vision_model": _g_config.ollama.vision_model,
+    }
 
 
 @_mcp.tool()
 async def unload_models(
     models: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Force unload one or more models from RAM."""
-    if _g_model_manager is None:
+    """Ask Ollama to unload models from memory (keep_alive=0)."""
+    if _g_ollama is None or _g_config is None:
         return {"error": "Server not initialized"}
-    return await _g_model_manager.unload(models or [])
+    targets = models or [
+        _g_config.ollama.embed_model,
+        _g_config.ollama.tag_model,
+        _g_config.ollama.vision_model,
+    ]
+    unloaded = []
+    for m in targets:
+        try:
+            await _g_ollama.unload(m)
+            unloaded.append(m)
+        except Exception as exc:
+            logger.warning("unload_failed", extra={"model": m, "error": str(exc)})
+    return {"unloaded": unloaded, "status": "ok"}
 
 
 @_mcp.tool()
 async def preload_models(
-    models: list[str] = ["embedder"],
+    models: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Preload models before a batch to reduce first-hit latency."""
-    if _g_model_manager is None:
+    """Preload models on the Ollama instance to reduce first-hit latency."""
+    if _g_ollama is None or _g_config is None:
         return {"error": "Server not initialized"}
-    return await _g_model_manager.preload(models)
+    targets = models or [_g_config.ollama.embed_model]
+    loaded = []
+    for m in targets:
+        try:
+            await _g_ollama.preload(m)
+            loaded.append(m)
+        except Exception as exc:
+            logger.warning("preload_failed", extra={"model": m, "error": str(exc)})
+    return {"loaded": loaded, "status": "ok"}
 
 
 # ------------------------------------------------------------------
@@ -540,7 +591,6 @@ def main() -> None:
 
     # Start watcher event loop consumer if enabled
     if _g_watcher and _g_config and _g_config.watcher.enabled:
-        import asyncio
         loop = asyncio.get_event_loop()
         _g_watcher.start(loop)
         for p in _g_config.watcher.default_watch_paths:

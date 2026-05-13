@@ -1,7 +1,8 @@
 """Multi-format document extractors.
 
-Supports PDF (text + OCR fallback), images (OCR), TXT, Markdown, DOCX, CSV/XLSX.
-OCR is loaded lazily via ModelManager.
+Supports PDF (text + Ollama vision OCR fallback), images (Ollama vision),
+TXT, Markdown, DOCX, CSV/XLSX.
+OCR is delegated to an Ollama vision model via HTTP.
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -32,18 +33,19 @@ class ExtractedDocument:
         self.metadata = metadata or {}
 
 
-def extract_file(
+async def extract_file(
     path: Path,
-    ocr_reader: Any | None = None,
     ocr_enabled: bool = True,
     ocr_languages: list[str] | None = None,
+    ollama_client: Any | None = None,
+    vision_model: str = "",
 ) -> ExtractedDocument:
     """Route to the correct extractor based on file extension."""
     ext = path.suffix.lower()
     if ext == ".pdf":
-        return extract_pdf(path, ocr_reader, ocr_enabled, ocr_languages)
+        return await extract_pdf(path, ocr_enabled, ocr_languages, ollama_client, vision_model)
     if ext in (".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp"):
-        return extract_image(path, ocr_reader, ocr_enabled, ocr_languages)
+        return await extract_image(path, ocr_enabled, ollama_client, vision_model)
     if ext in (".txt", ".md", ".markdown"):
         return extract_text(path, ext)
     if ext == ".docx":
@@ -59,11 +61,12 @@ def extract_file(
 # PDF
 # ------------------------------------------------------------------
 
-def extract_pdf(
+async def extract_pdf(
     path: Path,
-    ocr_reader: Any | None = None,
     ocr_enabled: bool = False,
     ocr_languages: list[str] | None = None,
+    ollama_client: Any | None = None,
+    vision_model: str = "",
 ) -> ExtractedDocument:
     import fitz  # PyMuPDF
 
@@ -85,14 +88,14 @@ def extract_pdf(
             pages_text.append(f"[Page {page_num + 1}]\n{text}")
         else:
             low_text_pages += 1
-            if ocr_enabled and ocr_reader:
+            if ocr_enabled and ollama_client and vision_model:
                 try:
                     pix = page.get_pixmap(dpi=200)
                     import tempfile
                     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                         tmp_path = Path(tmp.name)
                         pix.save(str(tmp_path))
-                    ocr_result = extract_image(tmp_path, ocr_reader, ocr_enabled, ocr_languages)
+                    ocr_result = await extract_image(tmp_path, ocr_enabled, ollama_client, vision_model)
                     if ocr_result.text.strip():
                         pages_text.append(f"[Page {page_num + 1} (OCR)]\n{ocr_result.text}")
                         ocr_used = True
@@ -113,20 +116,47 @@ def extract_pdf(
 
 
 # ------------------------------------------------------------------
-# Images (OCR)
+# Images (Ollama Vision OCR)
 # ------------------------------------------------------------------
 
-def extract_image(
+async def extract_image(
     path: Path,
-    ocr_reader: Any | None,
-    ocr_enabled: bool,
-    ocr_languages: list[str] | None,
+    ocr_enabled: bool = True,
+    ollama_client: Any | None = None,
+    vision_model: str = "",
 ) -> ExtractedDocument:
-    if not ocr_enabled:
-        return ExtractedDocument(text="", file_type=path.suffix.lower(), metadata={"error": "ocr_disabled"})
+    if not ocr_enabled or not ollama_client or not vision_model:
+        return ExtractedDocument(
+            text="", file_type=path.suffix.lower(),
+            metadata={"error": "ocr_disabled_or_no_ollama"},
+        )
 
-    # easyocr removed — no OCR fallback in CPU-only mode
-    return ExtractedDocument(text="", file_type=path.suffix.lower(), metadata={"error": "ocr_disabled_cpu_only"})
+    try:
+        from mcp_rag.ollama_client import image_to_base64
+
+        b64 = image_to_base64(path)
+        prompt = (
+            "Extract ALL text visible in this image. "
+            "Return only the extracted text, nothing else. "
+            "If no text is visible, return an empty string."
+        )
+        text = await ollama_client.chat_vision(
+            model=vision_model,
+            prompt=prompt,
+            images=[b64],
+        )
+        return ExtractedDocument(
+            text=text.strip(),
+            pages=1,
+            file_type=path.suffix.lower(),
+            ocr_used=True,
+        )
+    except Exception as exc:
+        logger.warning("vision_ocr_failed", extra={"path": str(path), "error": str(exc)})
+        return ExtractedDocument(
+            text="", file_type=path.suffix.lower(),
+            metadata={"error": f"vision_ocr_failed: {exc}"},
+        )
 
 
 # ------------------------------------------------------------------
@@ -201,11 +231,9 @@ def extract_spreadsheet(path: Path, ext: str) -> ExtractedDocument:
 
 def clean_text(text: str) -> str:
     """Normalize and strip noise."""
-    # Replace non-breaking spaces, strip Unicode artifacts
     import unicodedata
 
     text = unicodedata.normalize("NFKC", text)
-    # Collapse multiple spaces and blank lines
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n\s*\n+", "\n\n", text)
     return text.strip()
